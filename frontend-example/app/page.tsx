@@ -369,7 +369,7 @@ export default function Home() {
 
                 <div className="mt-6 text-center">
                   {scriptUtxo ? (
-                    gameState === 1 ? (
+                    gameState == 1 ? (
                       <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
                         Active game found:{" "}
                         {scriptUtxo.input.txHash.slice(0, 10)}
