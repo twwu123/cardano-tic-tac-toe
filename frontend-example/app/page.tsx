@@ -2,11 +2,14 @@
 
 import { useState, useEffect } from "react";
 import { BrowserWallet } from "@meshsdk/wallet";
-import { BlockfrostProvider, UTxO } from "@meshsdk/core";
-import { scriptAddress } from "./contract-types";
-import { startGame } from "./start-game";
-import { parseDatumCbor } from "@meshsdk/core-cst";
-import { move, claimWin, endGame } from "./progress-game";
+import {
+  initHead,
+  commitToHead,
+  closeHead,
+  fanoutHead,
+  sendFunds,
+} from "./hydra-actions";
+import { getCurrentUtxoSet } from "./hydra-txs";
 
 export default function Home() {
   const [wallet, setWallet] = useState<BrowserWallet | null>(null);
@@ -14,46 +17,13 @@ export default function Home() {
   const [isConnected, setIsConnected] = useState<boolean>(false);
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [availableWallets, setAvailableWallets] = useState<string[]>([]);
-  const [scriptUtxo, setScriptUtxo] = useState<UTxO | null>(null);
-  const [gameCells, setGameCells] = useState<string>("000000000000000000");
-  const [gameState, setGameState] = useState<number>(0);
-
-  const blockfrost = new BlockfrostProvider(
-    process.env.NEXT_PUBLIC_BLOCKFROST_API_KEY as string
-  );
+  const [sendAddress, setSendAddress] = useState<string>("");
+  const [sendAmount, setSendAmount] = useState<string>("");
 
   useEffect(() => {
     // Check for available wallets when component mounts
     checkAvailableWallets();
-
-    const getGameState = async () => {
-      console.log("Fetching game state from script address...");
-      blockfrost.fetchAddressUTxOs(scriptAddress).then((utxos) => {
-        setScriptUtxo(utxos.length > 0 ? utxos[0] : null);
-      });
-    };
-    getGameState();
-    // setInterval(getGameState, 5000);
   }, []);
-
-  useEffect(() => {
-    // Update rendered game state when scriptUtxo changes
-    if (scriptUtxo) {
-      const parsedDatum = parseDatumCbor(
-        scriptUtxo.output.plutusData as string
-      );
-      setGameCells(parsedDatum.fields[0].bytes);
-      setGameState(parsedDatum.fields[4].int);
-    }
-  }, [scriptUtxo]);
-
-  useEffect(() => {
-    console.log("Current game cells:", gameCells);
-  }, [gameCells]);
-
-  useEffect(() => {
-    console.log("Current game state:", gameState);
-  }, [gameState]);
 
   const checkAvailableWallets = () => {
     try {
@@ -107,85 +77,6 @@ export default function Home() {
   const shortenAddress = (address: string) => {
     if (address.length <= 20) return address;
     return `${address.slice(0, 10)}...${address.slice(-10)}`;
-  };
-
-  // Helper function to parse game state and render cell content
-  const getCellContent = (index: number) => {
-    const cellValue = gameCells.slice(index * 2, index * 2 + 2);
-    if (cellValue === "01") return "X";
-    if (cellValue === "02") return "O";
-    return "";
-  };
-
-  // Check if a move results in a win
-  const checkWin = (
-    boardState: string,
-    playerValue: string
-  ): number[] | null => {
-    // Split board state into cells
-    const cells: string[] = [];
-    for (let i = 0; i < boardState.length; i += 2) {
-      cells.push(boardState.slice(i, i + 2));
-    }
-
-    // All possible winning combinations
-    const winPatterns = [
-      [0, 1, 2], // Top row
-      [3, 4, 5], // Middle row
-      [6, 7, 8], // Bottom row
-      [0, 3, 6], // Left column
-      [1, 4, 7], // Middle column
-      [2, 5, 8], // Right column
-      [0, 4, 8], // Diagonal top-left to bottom-right
-      [2, 4, 6], // Diagonal top-right to bottom-left
-    ];
-
-    // Check each pattern
-    for (const pattern of winPatterns) {
-      if (
-        cells[pattern[0]] === playerValue &&
-        cells[pattern[1]] === playerValue &&
-        cells[pattern[2]] === playerValue
-      ) {
-        return pattern;
-      }
-    }
-
-    return null;
-  };
-
-  // Handle cell click
-  const handleCellClick = async (index: number) => {
-    if (wallet && scriptUtxo) {
-      // Get the current player's value
-      const datum = parseDatumCbor(scriptUtxo.output.plutusData as string);
-      const changeAddress = await wallet.getChangeAddress();
-
-      // Import deserializeBech32Address to get pubKeyHash
-      const { deserializeBech32Address } = await import("@meshsdk/core-cst");
-      const pubKeyHash = deserializeBech32Address(changeAddress).pubKeyHash;
-      const playerValue = datum.fields[1].bytes === pubKeyHash ? "01" : "02";
-
-      // Simulate the move
-      const boardState = gameCells;
-      const cells: string[] = [];
-      for (let i = 0; i < boardState.length; i += 2) {
-        cells.push(boardState.slice(i, i + 2));
-      }
-      cells[index] = playerValue;
-      const newBoardState = cells.join("");
-
-      // Check if this move wins
-      const winningIndices = checkWin(newBoardState, playerValue);
-
-      if (winningIndices) {
-        // This move wins the game
-        await claimWin(index, scriptUtxo, wallet, winningIndices);
-      } else {
-        // Regular move
-        await move(index, scriptUtxo, wallet);
-      }
-    }
   };
 
   return (
@@ -295,123 +186,125 @@ export default function Home() {
             )}
           </div>
 
-          {/* Tic-Tac-Toe Game Section */}
+          {/* Hydra Commands Section */}
           {isConnected && (
             <div className="mt-8">
               <div className="bg-white dark:bg-gray-800 shadow-xl rounded-lg p-8 border border-gray-200 dark:border-gray-700">
                 <h2 className="text-2xl font-bold text-center mb-6 text-gray-900 dark:text-white">
-                  Tic-Tac-Toe Game
+                  Hydra Commands
                 </h2>
 
-                <div className="flex justify-center">
-                  <div className="grid grid-cols-3 gap-2 w-72 h-72">
-                    {/* Row 1 */}
-                    <div
-                      onClick={() => handleCellClick(0)}
-                      className="bg-gray-100 dark:bg-gray-700 border-2 border-gray-300 dark:border-gray-600 rounded-lg flex items-center justify-center text-4xl font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer transition-colors"
+                <div className="space-y-4">
+                  <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-6">
+                    <h3 className="text-lg font-semibold mb-3 text-gray-900 dark:text-white">
+                      Initialize Hydra Head
+                    </h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                      Initialize a new Hydra Head with connected participants
+                    </p>
+                    <button
+                      onClick={initHead}
+                      className="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-6 rounded-lg transition-colors"
                     >
-                      {getCellContent(0)}
-                    </div>
-                    <div
-                      onClick={() => handleCellClick(1)}
-                      className="bg-gray-100 dark:bg-gray-700 border-2 border-gray-300 dark:border-gray-600 rounded-lg flex items-center justify-center text-4xl font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer transition-colors"
-                    >
-                      {getCellContent(1)}
-                    </div>
-                    <div
-                      onClick={() => handleCellClick(2)}
-                      className="bg-gray-100 dark:bg-gray-700 border-2 border-gray-300 dark:border-gray-600 rounded-lg flex items-center justify-center text-4xl font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer transition-colors"
-                    >
-                      {getCellContent(2)}
-                    </div>
+                      Initialize Head
+                    </button>
+                  </div>
 
-                    {/* Row 2 */}
-                    <div
-                      onClick={() => handleCellClick(3)}
-                      className="bg-gray-100 dark:bg-gray-700 border-2 border-gray-300 dark:border-gray-600 rounded-lg flex items-center justify-center text-4xl font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer transition-colors"
+                  <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-6">
+                    <h3 className="text-lg font-semibold mb-3 text-gray-900 dark:text-white">
+                      Commit Funds
+                    </h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                      Commit UTxOs to the Hydra Head
+                    </p>
+                    <button
+                      onClick={commitToHead}
+                      className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-6 rounded-lg transition-colors"
                     >
-                      {getCellContent(3)}
-                    </div>
-                    <div
-                      onClick={() => handleCellClick(4)}
-                      className="bg-gray-100 dark:bg-gray-700 border-2 border-gray-300 dark:border-gray-600 rounded-lg flex items-center justify-center text-4xl font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer transition-colors"
-                    >
-                      {getCellContent(4)}
-                    </div>
-                    <div
-                      onClick={() => handleCellClick(5)}
-                      className="bg-gray-100 dark:bg-gray-700 border-2 border-gray-300 dark:border-gray-600 rounded-lg flex items-center justify-center text-4xl font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer transition-colors"
-                    >
-                      {getCellContent(5)}
-                    </div>
+                      Commit
+                    </button>
+                  </div>
 
-                    {/* Row 3 */}
-                    <div
-                      onClick={() => handleCellClick(6)}
-                      className="bg-gray-100 dark:bg-gray-700 border-2 border-gray-300 dark:border-gray-600 rounded-lg flex items-center justify-center text-4xl font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer transition-colors"
+                  <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-6">
+                    <h3 className="text-lg font-semibold mb-3 text-gray-900 dark:text-white">
+                      Close Head
+                    </h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                      Close the Hydra Head and finalize state
+                    </p>
+                    <button
+                      onClick={closeHead}
+                      className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-6 rounded-lg transition-colors"
                     >
-                      {getCellContent(6)}
-                    </div>
-                    <div
-                      onClick={() => handleCellClick(7)}
-                      className="bg-gray-100 dark:bg-gray-700 border-2 border-gray-300 dark:border-gray-600 rounded-lg flex items-center justify-center text-4xl font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer transition-colors"
+                      Close Head
+                    </button>
+                  </div>
+
+                  <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-6">
+                    <h3 className="text-lg font-semibold mb-3 text-gray-900 dark:text-white">
+                      Fanout
+                    </h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                      Distribute final UTxOs to participants
+                    </p>
+                    <button
+                      onClick={fanoutHead}
+                      className="bg-purple-600 hover:bg-purple-700 text-white font-medium py-2 px-6 rounded-lg transition-colors"
                     >
-                      {getCellContent(7)}
-                    </div>
-                    <div
-                      onClick={() => handleCellClick(8)}
-                      className="bg-gray-100 dark:bg-gray-700 border-2 border-gray-300 dark:border-gray-600 rounded-lg flex items-center justify-center text-4xl font-bold text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 cursor-pointer transition-colors"
+                      Fanout
+                    </button>
+                  </div>
+
+                  <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-6">
+                    <h3 className="text-lg font-semibold mb-3 text-gray-900 dark:text-white">
+                      Get Current UTxO Set
+                    </h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                      Retrieve the current UTxO set in the Hydra Head
+                    </p>
+                    <button
+                      onClick={() => {
+                        getCurrentUtxoSet();
+                      }}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white font-medium py-2 px-6 rounded-lg transition-colors"
                     >
-                      {getCellContent(8)}
+                      Get UTxO Set
+                    </button>
+                  </div>
+
+                  <div className="bg-gray-50 dark:bg-gray-700 rounded-lg p-6">
+                    <h3 className="text-lg font-semibold mb-3 text-gray-900 dark:text-white">
+                      Send Funds
+                    </h3>
+                    <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+                      Send funds to an address within the Hydra Head
+                    </p>
+                    <div className="space-y-3">
+                      <input
+                        type="text"
+                        value={sendAddress}
+                        onChange={(e) => setSendAddress(e.target.value)}
+                        placeholder="Enter recipient address..."
+                        className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                      />
+                      <input
+                        type="text"
+                        value={sendAmount}
+                        onChange={(e) => setSendAmount(e.target.value)}
+                        placeholder="Enter amount (lovelace)..."
+                        className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-800 text-gray-900 dark:text-white placeholder-gray-400 dark:placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-orange-500 focus:border-transparent"
+                      />
+                      <button
+                        onClick={() => {
+                          sendFunds(sendAddress, sendAmount);
+                        }}
+                        disabled={!sendAddress || !sendAmount}
+                        className="w-full bg-orange-600 hover:bg-orange-700 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-medium py-2 px-6 rounded-lg transition-colors"
+                      >
+                        Send
+                      </button>
                     </div>
                   </div>
-                </div>
-
-                <div className="mt-6 text-center">
-                  {scriptUtxo ? (
-                    gameState == 1 ? (
-                      <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-                        Active game found:{" "}
-                        {scriptUtxo.input.txHash.slice(0, 10)}
-                        ...
-                      </p>
-                    ) : (
-                      <>
-                        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-                          Game over !
-                        </p>
-                        <button
-                          onClick={async () => {
-                            if (wallet) {
-                              await endGame(scriptUtxo, wallet);
-                            } else {
-                              alert("Wallet not connected");
-                            }
-                          }}
-                          className="bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-6 rounded-lg transition-colors"
-                        >
-                          End Game
-                        </button>
-                      </>
-                    )
-                  ) : (
-                    <>
-                      <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-                        No active games found. Start a new game!
-                      </p>
-                      <button
-                        onClick={async () => {
-                          startGame(
-                            "addr_test1qzhxkujg29rp6au6nwxg5eu9yq73xzk9gq30zy0v8t75uvanf04dmdu9p7xlkeksym6zlc057szy9py8muzkt8nptagqnsw8yx",
-                            "addr_test1qrp0ert4hqff66z3th3d8lz3lqx8ln83tqaqcj74z55jgedgqeckjr38wfpvynqplxfk0dedgvtzwnwhvnkj9dnpthjq5zpydj"
-                          );
-                        }}
-                        className="bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-6 rounded-lg transition-colors"
-                      >
-                        Start New Game
-                      </button>
-                    </>
-                  )}
                 </div>
               </div>
             </div>
